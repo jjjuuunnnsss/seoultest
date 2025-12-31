@@ -58,7 +58,7 @@ if keyword:
         count = get_seoul_library_ebook_count(keyword)
         
         # 결과 출력
-        st.metric(label="중복 제거 후 전자책 소장수", value=f"{count} 권")
+        st.metric(label="소장 현황", value=f"{count} 권")
         
         if count == 0:
-            st.info("검색된 전자책이 없습니다. 검색어를 바꿔보거나 'ze' 유형이 있는지 확인해보세요.")
+            st.info("없음")
