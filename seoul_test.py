@@ -2,67 +2,56 @@ import streamlit as st
 import requests
 from urllib.parse import quote
 
-# 발급받으신 인증키를 여기에 입력하세요
-SEOUL_API_KEY = "my_key"
+# 1. 보안을 위해 Streamlit Secrets에서 API 키를 가져옵니다.
+# Streamlit Cloud 설정의 Secrets 부분에 seoul_api_key = "실제키값" 을 입력해두어야 합니다.
+try:
+    SEOUL_API_KEY = st.secrets["seoul_api_key"]
+except KeyError:
+    st.error("Streamlit Secrets에 'seoul_api_key'가 설정되지 않았습니다.")
+    SEOUL_API_KEY = None
 
-def search_seoul_library(book_name):
-    unique_books = set()  # 중복 제거용 집합
-    book_details = []     # 최종 리스트
+def get_seoul_library_ebook_count(keyword):
+    """
+    서울도서관 API를 사용하여 자료명/저자 통합 검색 후 
+    중복 제거된 '전자책' 권수만 반환합니다.
+    """
+    if not SEOUL_API_KEY:
+        return "인증키 오류"
+
+    unique_books = {}  # CTRLNO를 키로 사용하여 중복 제거
+    encoded_keyword = quote(keyword.encode("utf-8"))
     
-    encoded_query = quote(book_name.encode("utf-8"))
+    # 자료명 검색 URL과 저자 검색 URL (분석하신 위치값 반영)
+    search_urls = [
+        f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/{encoded_keyword}/%20/%20/%20/%20",
+        f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/%20/{encoded_keyword}/%20/%20/%20"
+    ]
     
-    # 1. 제목(TITLE) 검색 조건: BIB_TYPE="ze"
-    # URL 구조 예시: /1/100/(제목)/(저자)/(자료코드)/(ISBN)/(자료유형)
-    # 저자, 자료코드, ISBN 자리는 공백(%20) 처리
-    title_search_url = f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/{encoded_query}/%20/%20/%20/ze"
-    
-    # 2. 저자(AUTHOR) 검색 조건: BIB_TYPE="ze"
-    # 제목 자리는 공백(%20) 처리
-    author_search_url = f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/%20/{encoded_query}/%20/%20/ze"
-    
-    urls = [("제목", title_search_url), ("저자", author_search_url)]
-    
-    for label, url in urls:
+    for url in search_urls:
         try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
+            response = requests.get(url, timeout=7)
+            if response.status_code == 200:
+                data = response.json()
+                
                 if "SeoulLibraryBookSearchInfo" in data:
                     rows = data["SeoulLibraryBookSearchInfo"]["row"]
+                    
                     for book in rows:
-                        # 중복 제거를 위한 고유 ID (BOOK_MAST_NO)
-                        book_id = book.get("BOOK_MAST_NO")
-                        if book_id not in unique_books:
-                            unique_books.add(book_id)
-                            book_details.append({
-                                "제목": book.get("TITLE"),
-                                "저자": book.get("AUTHOR"),
-                                "출판사": book.get("PUBLISHER"),
-                                "발행년": book.get("PUBLISH_YEAR"),
-                                "자료유형": book.get("BIB_TYPE_NAME"), # 확인용
-                                "검색출처": label
-                            })
-        except Exception as e:
-            st.error(f"{label} 검색 중 오류 발생: {e}")
+                        # 사용자가 요청한 필터링: <BIB_TYPE_NAME>이 "전자책"인 자료만 포함
+                        # 파일 분석 결과 전자책은 이 필드에 '전자책'이라고 명시됨
+                        if book.get("BIB_TYPE_NAME") == "전자책":
+                            # 중복 제거: 고유번호인 <CTRLNO>를 기준으로 저장
+                            ctrl_no = book.get("CTRLNO")
+                            if ctrl_no:
+                                unique_books[ctrl_no] = book
+                                
+        except Exception:
+            # 개별 호출 오류 시 해당 루프는 건너뜀
+            continue
             
-    return book_details
+    # 최종 필터링 및 중복 제거된 결과 개수 반환
+    return len(unique_books)
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="서울도서관 API v2 테스트", layout="wide")
-st.title("📚 서울도서관 전자책(ze) 통합검색 테스트")
-st.caption("메뉴얼상의 BIB_TYPE: 'ze' 인자를 사용하여 제목과 저자를 각각 검색합니다.")
-
-keyword = st.text_input("검색어를 입력하세요", "")
-
-if keyword:
-    with st.spinner("요청하신 조건으로 검색 중..."):
-        results = search_seoul_library(keyword)
-        
-        if results:
-            st.success(f"중복 제거 후 총 **{len(results)}**권의 전자책이 검색되었습니다.")
-            st.dataframe(results, use_container_width=True)
-            
-            web_link = f"https://elib.seoul.go.kr/contents/search/content?t=EB&k={quote(keyword.encode('utf-8'))}"
-            st.markdown(f"🔗 [서울도서관 전자도서관 웹사이트에서 확인]({web_link})")
-        else:
-            st.warning("해당 조건으로 검색된 전자책 결과가 없습니다.")
+# --- Streamlit UI 호출 예시 ---
+# count = get_seoul_library_ebook_count("옌롄커")
+# st.write(f"서울도서관 소장 현황: {count}권")
