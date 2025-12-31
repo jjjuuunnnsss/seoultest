@@ -3,7 +3,7 @@ import requests
 from urllib.parse import quote
 
 # 발급받으신 인증키를 여기에 입력하세요
-SEOUL_API_KEY = "4a696550776a756e373246546c6468"
+SEOUL_API_KEY = "my_key"
 
 def search_seoul_library(book_name):
     unique_books = set()  # 중복 제거용 집합
