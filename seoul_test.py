@@ -2,23 +2,22 @@ import streamlit as st
 import requests
 from urllib.parse import quote
 
-# 1. Secrets 키 확인 (에러 발생 방지를 위해 get 메서드 사용)
-# Streamlit Cloud 설정(Secrets)에 seoul_api_key = "..." 가 반드시 있어야 합니다.
+# 1. 보안을 위한 Secrets 설정 확인
 SEOUL_API_KEY = st.secrets.get("seoul_api_key")
 
-def get_seoul_library_ebook_count(keyword):
+def get_seoul_library_ebook_details(keyword):
     """
-    서울도서관 API 통합 검색 및 '전자책' 필터링 로직
+    서울도서관 API 통합 검색 후 
+    중복 제거된 '전자책'의 상세 리스트와 권수를 반환합니다.
     """
-    # API 키가 없을 경우 사용자에게 알림
     if not SEOUL_API_KEY:
         st.error("🔑 API 키를 찾을 수 없습니다. Streamlit Cloud의 Secrets 설정을 확인해주세요.")
-        return 0
+        return [], 0
 
-    unique_books = {}
-    encoded_keyword = quote(keyword) # 이미 문자열이면 바로 quote 가능
+    unique_books = {}  # CTRLNO를 키로 사용하여 중복 제거 및 데이터 저장
+    encoded_keyword = quote(keyword)
     
-    # 분석된 최적의 검색 URL (자료명, 저자 순서 고정)
+    # 자료명 검색 URL과 저자 검색 URL
     search_urls = [
         {"type": "자료명", "url": f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/{encoded_keyword}/%20/%20/%20/%20"},
         {"type": "저자", "url": f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/100/%20/{encoded_keyword}/%20/%20/%20"}
@@ -29,36 +28,47 @@ def get_seoul_library_ebook_count(keyword):
             response = requests.get(item["url"], timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                
                 if "SeoulLibraryBookSearchInfo" in data:
                     rows = data["SeoulLibraryBookSearchInfo"].get("row", [])
                     for book in rows:
-                        # 3. <BIB_TYPE_NAME>이 "전자책"인 자료만 필터링
+                        # BIB_TYPE_NAME이 "전자책"인 경우만 추출
                         if book.get("BIB_TYPE_NAME") == "전자책":
-                            # 2. 중복 제거: <CTRLNO> 기준
                             ctrl_no = book.get("CTRLNO")
-                            if ctrl_no:
-                                unique_books[ctrl_no] = book
-                else:
-                    # 데이터가 없을 때 API가 보내는 메시지 확인용 (필요시 주석 해제)
-                    # st.write(f"{item['type']} 결과 없음: {data.get('RESULT', {}).get('MESSAGE')}")
-                    pass
-        except Exception as e:
-            st.warning(f"{item['type']} 검색 중 통신 에러가 발생했습니다.")
+                            if ctrl_no and ctrl_no not in unique_books:
+                                unique_books[ctrl_no] = {
+                                    "CTRLNO": ctrl_no,
+                                    "자료명": book.get("TITLE"),
+                                    "저자": book.get("AUTHOR"),
+                                    "출처": item["type"]
+                                }
+        except Exception:
             continue
             
-    return len(unique_books)
+    # 리스트 형식으로 변환하여 반환
+    result_list = list(unique_books.values())
+    return result_list, len(result_list)
 
-# --- 실행부 ---
-st.title("서울도서관 전자책 검색기")
-keyword = st.text_input("검색어를 입력하고 엔터를 치세요", "")
+# --- Streamlit UI ---
+st.title("📚 서울도서관 전자책 통합 검색")
+
+keyword = st.text_input("검색어를 입력하세요 (예: 옌롄커)", "")
 
 if keyword:
-    with st.spinner('서울도서관 데이터를 분석 중입니다...'):
-        count = get_seoul_library_ebook_count(keyword)
+    with st.spinner('데이터를 통합 분석 중입니다...'):
+        ebook_list, total_count = get_seoul_library_ebook_details(keyword)
         
-        # 결과 출력
-        st.metric(label="중복 제거 후 전자책 소장수", value=f"{count} 권")
+        # 1. 결과 요약 출력
+        st.subheader("검색 결과 요약")
+        st.metric(label="중복 제거 후 전자책 소장수", value=f"{total_count} 권")
         
-        if count == 0:
-            st.info("검색된 전자책이 없습니다. 검색어를 바꿔보거나 'ze' 유형이 있는지 확인해보세요.")
+        # 2. 상세 리스트업 출력
+        if total_count > 0:
+            st.subheader("확인된 자료 상세 리스트")
+            # 표(Table) 형태로 출력하여 가독성을 높임
+            st.table(ebook_list)
+            
+            # 참고용 웹 링크
+            web_link = f"https://elib.seoul.go.kr/contents/search/content?t=EB&k={quote(keyword)}"
+            st.markdown(f"🔗 [서울도서관 전자도서관에서 실제 도서 확인하기]({web_link})")
+        else:
+            st.info(f"'{keyword}'(으)로 검색된 전자책 결과가 없습니다.")
