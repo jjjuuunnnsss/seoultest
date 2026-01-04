@@ -1,64 +1,66 @@
 import streamlit as st
-import requests
+import pandas as pd
 from urllib.parse import quote
 
-# 1. Secrets 키 확인 (에러 발생 방지를 위해 get 메서드 사용)
-# Streamlit Cloud 설정(Secrets)에 seoul_api_key = "..." 가 반드시 있어야 합니다.
-SEOUL_API_KEY = st.secrets.get("seoul_api_key")
+# 페이지 설정
+st.set_page_config(page_title="서초구 대용량 데이터 테스트", page_icon="🔍")
 
-def get_seoul_library_ebook_count(keyword):
-    """
-    서울도서관 API 통합 검색 및 '전자책' 필터링 로직
-    """
-    # API 키가 없을 경우 사용자에게 알림
-    if not SEOUL_API_KEY:
-        st.error("🔑 API 키를 찾을 수 없습니다. Streamlit Cloud의 Secrets 설정을 확인해주세요.")
-        return 0
+@st.cache_data(ttl=86400)  # 데이터를 24시간 동안 메모리에 보관 (앱 속도 최적화)
+def load_seocho_full_data():
+    # 9.4MB 전체 데이터 링크
+    url = "https://www.data.go.kr/cmm/cmm/fileDownload.do?atchFileId=FILE_000000003242287&fileDetailSn=1&dataNm=%EC%84%9C%EC%9A%B8%ED%8A%B9%EB%B3%84%EC%8B%9C%20%EC%84%9C%EC%B4%88%EA%B5%AC_%EC%A0%84%EC%9E%90%EB%8F%84%EC%84%9C%EA%B4%80%20%EB%8F%84%EC%84%9C%EC%A0%95%EB%B3%B4_20250909"
+    
+    try:
+        # 1. 인코딩 시도 (공공데이터는 대부분 CP949)
+        df = pd.read_csv(url, encoding='cp949')
+        
+        # 2. 데이터 클리닝 (공백 제거 및 문자열 강제 변환)
+        df.columns = df.columns.str.strip()
+        for col in ['도서명', '저자명', '형식']:
+            df[col] = df[col].astype(str).str.strip()
+        
+        # 3. '전자책' 형식만 추출하여 메모리 최적화 (오디오북 제외)
+        df_ebook = df[df['형식'].str.contains("전자책", na=False)].copy()
+        return df_ebook
+    except Exception as e:
+        st.error(f"데이터 로드 중 오류 발생: {e}")
+        return None
 
-    unique_books = {}
-    encoded_keyword = quote(keyword) # 이미 문자열이면 바로 quote 가능
+# UI 구성
+st.title("📚 서초구 전자도서관 단독 테스트")
+st.info("9.4MB 대용량 CSV 데이터를 분석합니다. 첫 실행 시 다운로드 시간이 3~5초 소요될 수 있습니다.")
+
+with st.spinner("데이터베이스 로딩 중..."):
+    df_seocho = load_seocho_full_data()
+
+if df_seocho is not None:
+    st.success(f"총 {len(df_seocho):,}권의 전자책 데이터를 로드했습니다.")
     
-    # 분석된 최적의 검색 URL (자료명, 저자 순서 고정)
-    search_urls = [
-        {"type": "자료명", "url": f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/500/{encoded_keyword}/%20/%20/%20/%20"},
-        {"type": "저자", "url": f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/1/500/%20/{encoded_keyword}/%20/%20/%20"}
-    ]
+    # 검색창
+    keyword = st.text_input("검색어를 입력하세요 (예: 노인과 바다)", placeholder="입력 후 엔터")
     
-    for item in search_urls:
-        try:
-            response = requests.get(item["url"], timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                
-                if "SeoulLibraryBookSearchInfo" in data:
-                    rows = data["SeoulLibraryBookSearchInfo"].get("row", [])
-                    for book in rows:
-                        # 3. <BIB_TYPE_NAME>이 "전자책"인 자료만 필터링
-                        if book.get("BIB_TYPE_NAME") == "전자책":
-                            # 2. 중복 제거: <CTRLNO> 기준
-                            ctrl_no = book.get("CTRLNO")
-                            if ctrl_no:
-                                unique_books[ctrl_no] = book
-                else:
-                    # 데이터가 없을 때 API가 보내는 메시지 확인용 (필요시 주석 해제)
-                    # st.write(f"{item['type']} 결과 없음: {data.get('RESULT', {}).get('MESSAGE')}")
-                    pass
-        except Exception as e:
-            st.warning(f"{item['type']} 검색 중 통신 에러가 발생했습니다.")
-            continue
+    if keyword:
+        # 중복 제거 로직 (도서명, 저자명, 출판사가 같으면 1권으로 간주)
+        mask = (df_seocho['도서명'].str.contains(keyword, case=False, na=False)) | \
+               (df_seocho['저자명'].str.contains(keyword, case=False, na=False))
+        
+        # 검색 결과 추출
+        search_result = df_seocho[mask].drop_duplicates(subset=['도서명', '저자명', '출판사'])
+        
+        # 결과 요약
+        st.subheader(f"🔍 '{keyword}' 검색 결과: {len(search_result)}권")
+        
+        # 상세 리스트업
+        if not search_result.empty:
+            # 보기 좋게 표로 출력
+            st.table(search_result[['도서명', '저자명', '출판사', '국제 표준 도서 번호(isbn)']].reset_index(drop=True))
             
-    return len(unique_books)
+            # 실제 서초구 전자도서관 연결 링크
+            web_link = f"https://e-book.seocholib.or.kr/search?keyword={quote(keyword)}"
+            st.markdown(f"🔗 [서초구 전자도서관에서 실제 확인하기]({web_link})")
+        else:
+            st.warning("일치하는 자료가 없습니다.")
 
-# --- 실행부 ---
-st.title("서울도서관 전자책 검색기")
-keyword = st.text_input("검색어를 입력하고 엔터를 치세요", "")
-
-if keyword:
-    with st.spinner('서울도서관 데이터를 분석 중입니다...'):
-        count = get_seoul_library_ebook_count(keyword)
-        
-        # 결과 출력
-        st.metric(label="소장 현황", value=f"{count} 권")
-        
-        if count == 0:
-            st.info("없음")
+    # 디버깅용 데이터 구조 확인
+    with st.expander("데이터 구조 미리보기 (상위 5개)"):
+        st.dataframe(df_seocho.head())
