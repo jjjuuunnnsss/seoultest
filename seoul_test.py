@@ -39,32 +39,29 @@ libraries = [
 def search_libraries(book_name):
     results = []
     progress_bar = st.progress(0)
-    
-    # 서초구 데이터 미리 준비
     df_seocho = load_seocho_data()
 
     for i, lib in enumerate(libraries):
         progress_bar.progress((i + 1) / len(libraries))
         try:
-            # A. 서초구 CSV 검색
+            # A. 서초구 CSV (캐싱 데이터 활용)
             if lib["type"] == "seocho_csv":
                 count = 0
                 if df_seocho is not None:
                     mask = (df_seocho['도서명'].str.contains(book_name, case=False, na=False)) | \
                            (df_seocho['저자명'].str.contains(book_name, case=False, na=False))
                     count = len(df_seocho[mask].drop_duplicates(subset=['도서명', '저자명', '출판사']))
-                display = f"{count}권" if count > 0 else "없음"
-                link = f"https://e-book.seocholib.or.kr/search?keyword={quote(book_name)}"
-                results.append({"name": lib['name'], "link": link, "status": display})
+                results.append({"name": lib['name'], "link": f"https://e-book.seocholib.or.kr/search?keyword={quote(book_name)}", "status": f"{count}권" if count > 0 else "없음"})
 
-            # B. 서울도서관 API 검색
+            # B. 서울도서관 API (공백 -> 언더바 변환 적용)
             elif lib["type"] == "seoul_api":
                 if not SEOUL_API_KEY:
                     results.append({"name": lib['name'], "link": "#", "status": "키 설정 필요"})
                     continue
                 unique_books = {}
-                for url_type in ["title", "author"]:
-                    path = f"1/500/{quote(book_name)}/%20/%20/%20/%20" if url_type == "title" else f"1/500/%20/{quote(book_name)}/%20/%20/%20"
+                processed_name = book_name.replace(" ", "_")
+                encoded_kw = quote(processed_name)
+                for path in [f"1/500/{encoded_kw}/%20/%20/%20/%20", f"1/500/%20/{encoded_kw}/%20/%20/%20"]:
                     resp = requests.get(f"{lib['url']}{SEOUL_API_KEY}/json/SeoulLibraryBookSearchInfo/{path}", timeout=10)
                     if resp.status_code == 200:
                         data = resp.json()
@@ -73,33 +70,28 @@ def search_libraries(book_name):
                                 if book.get("BIB_TYPE_NAME") == "전자책":
                                     unique_books[book.get("CTRLNO")] = book
                 count = len(unique_books)
-                display = f"{count}권" if count > 0 else "없음"
-                link = f"https://elib.seoul.go.kr/contents/search/content?t=EB&k={quote(book_name)}"
-                results.append({"name": lib['name'], "link": link, "status": display})
+                results.append({"name": lib['name'], "link": f"https://elib.seoul.go.kr/contents/search/content?t=EB&k={quote(book_name)}", "status": f"{count}권" if count > 0 else "없음"})
 
-            # C. 기타 도서관 스크래핑
+            # C. 기타 스크래핑 도서관
             else:
                 encoded_query = quote(book_name.encode(lib["encoding"]))
-                if lib["type"] == "gangnam":
-                    search_url = f"{lib['url']}?scon1=TITLE&sarg1={encoded_query}&sopr2=OR&scon2=AUTHOR&sarg2={encoded_query}"
-                else:
-                    search_url = f"{lib['url']}?{lib['key_param']}={encoded_query}&schClst=ctts%2Cautr&schDvsn=001"
+                search_url = f"{lib['url']}?{lib['key_param']}={encoded_query}" if lib["type"] != "gangnam" else f"{lib['url']}?scon1=TITLE&sarg1={encoded_query}&sopr2=OR&scon2=AUTHOR&sarg2={encoded_query}"
+                if lib["type"] == "ink": search_url += "&schClst=ctts%2Cautr&schDvsn=001"
                 
                 resp = requests.get(search_url, timeout=7)
                 tree = html.fromstring(resp.content)
                 nodes = tree.xpath(lib["xpath"])
                 count = int(re.findall(r'\d+', "".join(nodes))[0]) if nodes and re.findall(r'\d+', "".join(nodes)) else 0
                 results.append({"name": lib['name'], "link": search_url, "status": f"{count}권" if count > 0 else "없음"})
-
         except:
             results.append({"name": lib['name'], "link": "#", "status": "확인불가"})
 
     progress_bar.empty()
     return results
 
-# --- 화면 출력 ---
+# --- 화면 출력부 ---
 st.markdown('<h2 style="font-size:24px; margin-top:-50px;">📚 전자도서관 통합검색</h2>', unsafe_allow_html=True)
-keyword = st.text_input("책 제목 또는 저자를 입력하세요", placeholder="예: 노인과 바다", key="search_input")
+keyword = st.text_input("책 제목 또는 저자를 입력하세요", placeholder="예: 노인과 바다")
 
 if keyword:
     with st.spinner(f"'{keyword}' 검색 중..."):
